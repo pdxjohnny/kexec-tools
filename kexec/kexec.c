@@ -926,16 +926,12 @@ static int load_jump_back_helper_image(unsigned long kexec_flags, void *entry)
 	return result;
 }
 
-static int kexec_loaded(const char *file)
+static int file_to_int(const char *file)
 {
 	long ret = -1;
 	FILE *fp;
 	char *p;
 	char line[3];
-
-	/* No way to tell if an image is loaded under Xen, assume it is. */
-	if (xen_present())
-		return 1;
 
 	fp = fopen(file, "r");
 	if (fp == NULL)
@@ -958,6 +954,15 @@ static int kexec_loaded(const char *file)
 		return -1;
 
 	return (int)ret;
+}
+
+static int kexec_loaded(const char *file)
+{
+	/* No way to tell if an image is loaded under Xen, assume it is. */
+	if (xen_present())
+		return 1;
+
+	return file_to_int(file);
 }
 
 /*
@@ -1353,6 +1358,7 @@ int main(int argc, char *argv[])
 	int opt;
 	int result = 0;
 	int fileind;
+	int pv_cr_pinning;
 	static const struct option options[] = {
 		KEXEC_ALL_OPTIONS
 		{ 0, 0, 0, 0},
@@ -1563,11 +1569,31 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
+
+	/*
+	 * Check if paravirtualized control register pinning is enabled. If it
+	 * is, we have to use the file syscall, the old syscall will fail. If
+	 * the file isn't present in sysfs, then it's not enabled. If
+	 * paravirtualized control register pinning is enabled use the file
+	 * syscall and do not use the load sycall.
+	 */
+	pv_cr_pinning = file_to_int("/sys/hypervisor/pv_cr_pinning");
+	if (pv_cr_pinning == -1) {
+		pv_cr_pinning = 0;
+	}
+	if (pv_cr_pinning == 1) {
+		do_kexec_file_syscall = 1;
+		do_kexec_fallback = 0;
+	}
+
 	if (do_kexec_file_syscall) {
 		if (do_load_jump_back_helper && !do_kexec_fallback)
 			die("--load-jump-back-helper not supported with kexec_file_load\n");
 		if (kexec_flags & KEXEC_PRESERVE_CONTEXT)
 			die("--load-preserve-context not supported with kexec_file_load\n");
+	} else if (pv_cr_pinning) {
+		die("--kexec-file-syscall required when paravirtualized "
+		    "control register pinning is enabled\n");
 	}
 
 	if (do_reuse_initrd){
